@@ -1,0 +1,31 @@
+{
+  "name": "codetogether",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeTogether - a collaborative coding and learning platform",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev:client": "npm run dev --workspace client",
+    "dev:server": "npm run dev --workspace server",
+    "build": "npm run build --workspace server && npm run build --workspace client",
+    "typecheck": "npm run typecheck --workspace server && npm run typecheck --workspace client",
+    "test": "npm run test --workspace server",
+    "seed": "npm run seed:learning-paths --workspace server",
+    "seed:reset": "npm run seed:learning-paths:reset --workspace server"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "monaco-editor": "0.52.2"
+  },
+  "overrides": {
+    "monaco-editor": "0.52.2",
+    "y-monaco": {
+      "monaco-editor": "0.52.2"
+    }
+  }
+}
