@@ -13,10 +13,12 @@ export const corsOptions: CorsOptions = {
     console.log('[cors] Request origin:', origin);
     console.log('[cors] Allowed origins:', [...allowedOrigins]);
     if (isAllowedOrigin(origin)) {
+      console.log('[cors] Origin accepted');
       callback(null, true);
       return;
     }
 
+    console.log('[cors] Origin rejected');
     callback(new AppError(403, 'CORS_ORIGIN_DENIED', 'Origin is not allowed'));
   },
   credentials: true,
