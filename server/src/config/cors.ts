@@ -10,6 +10,8 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
 
 export const corsOptions: CorsOptions = {
   origin(origin, callback) {
+    console.log('[cors] Request origin:', origin);
+    console.log('[cors] Allowed origins:', [...allowedOrigins]);
     if (isAllowedOrigin(origin)) {
       callback(null, true);
       return;
