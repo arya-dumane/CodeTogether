@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { Server as HttpServer } from 'node:http';
 import { Types } from 'mongoose';
+import { z } from 'zod';
 import type { SessionData } from 'express-session';
 import { Server } from 'socket.io';
 import { corsOptions, isAllowedOrigin } from '../config/cors.js';
@@ -15,6 +16,7 @@ import {
   DocumentMessageError,
   MAX_DOCUMENT_MESSAGE_BYTES,
 } from './documents.js';
+import { RoomMessage } from '../models/RoomMessage.js';
 import {
   CLIENT_EVENTS,
   SERVER_EVENTS,
@@ -181,6 +183,10 @@ export class RealtimeServer {
 
   getDocumentSubscriptionCount(): number {
     return this.documents.subscriptionCount;
+  }
+
+  getDocumentHub(): DocumentHub {
+    return this.documents;
   }
 
   revokeUserFromRoom(userId: string, roomId: string, reason: AccessRevokedReason): void {
@@ -356,25 +362,53 @@ export class RealtimeServer {
     sessionSockets.add(socket.id);
     this.sessions.set(socket.data.sessionId, sessionSockets);
 
-    socket.on(CLIENT_EVENTS.roomJoin, (payload, acknowledge) => {
+    (socket as any).on(CLIENT_EVENTS.roomJoin, (payload, acknowledge) => {
       void this.handleRoomJoin(socket, payload, acknowledge);
     });
 
-    socket.on(CLIENT_EVENTS.roomLeave, (payload, acknowledge) => {
+    (socket as any).on(CLIENT_EVENTS.roomLeave, (payload, acknowledge) => {
       this.handleRoomLeave(socket, payload, acknowledge);
     });
 
-    socket.on(CLIENT_EVENTS.documentSubscribe, (payload, acknowledge) => {
+    (socket as any).on(CLIENT_EVENTS.documentSubscribe, (payload, acknowledge) => {
       void this.handleDocumentSubscribe(socket, payload, acknowledge);
     });
 
-    socket.on(CLIENT_EVENTS.documentUnsubscribe, (payload, acknowledge) => {
+    (socket as any).on(CLIENT_EVENTS.documentUnsubscribe, (payload, acknowledge) => {
       this.handleDocumentUnsubscribe(socket, payload, acknowledge);
     });
 
-    socket.on(CLIENT_EVENTS.documentMessage, (payload, acknowledge) => {
+    (socket as any).on(CLIENT_EVENTS.documentMessage, ((payload: any, acknowledge?: any) => {
       void this.handleDocumentMessage(socket, payload, acknowledge);
-    });
+    }) as any);
+
+    (socket as any).on(CLIENT_EVENTS.joinChat, ((payload: any, acknowledge?: any) => {
+      void this.handleChatJoin(socket, payload, acknowledge);
+    }) as any);
+
+    (socket as any).on(CLIENT_EVENTS.leaveChat, ((payload: any, acknowledge?: any) => {
+      void this.handleChatLeave(socket, payload, acknowledge);
+    }) as any);
+
+    (socket as any).on(CLIENT_EVENTS.sendMessage, ((payload: any, acknowledge?: any) => {
+      void this.handleChatSendMessage(socket, payload, acknowledge);
+    }) as any);
+
+    (socket as any).on(CLIENT_EVENTS.messageEdited, ((payload: any, acknowledge?: any) => {
+      void this.handleChatMessageEdit(socket, payload, acknowledge);
+    }) as any);
+
+    (socket as any).on(CLIENT_EVENTS.messageDeleted, ((payload: any, acknowledge?: any) => {
+      void this.handleChatMessageDelete(socket, payload, acknowledge);
+    }) as any);
+
+    (socket as any).on(CLIENT_EVENTS.typingStart, ((payload: any, acknowledge?: any) => {
+      void this.handleTypingStart(socket, payload, acknowledge);
+    }) as any);
+
+    (socket as any).on(CLIENT_EVENTS.typingStop, ((payload: any, acknowledge?: any) => {
+      void this.handleTypingStop(socket, payload, acknowledge);
+    }) as any);
 
     socket.onAny((event, ...args) => {
       if (
@@ -401,7 +435,7 @@ export class RealtimeServer {
       socket.emit(SERVER_EVENTS.presenceError, result.error);
     });
 
-    socket.on('disconnect', () => this.handleDisconnect(socket));
+    (socket as any).on('disconnect', () => this.handleDisconnect(socket));
   }
 
   private async handleRoomJoin(
@@ -724,6 +758,25 @@ export class RealtimeServer {
     }
   }
 
+  private addPresence(roomId: string, userId: string, displayName: string, socketId: string): boolean {
+    const roomPresence = this.presence.get(roomId) ?? new Map<string, PresenceUser>();
+    const existing = roomPresence.get(userId);
+
+    if (!existing) {
+      const presenceUser: PresenceUser = {
+        userId,
+        displayName,
+        connections: new Set([socketId]),
+      };
+      roomPresence.set(userId, presenceUser);
+      this.presence.set(roomId, roomPresence);
+      return true;
+    }
+
+    existing.connections.add(socketId);
+    return false;
+  }
+
   private rejectDocumentTraffic(
     socket: RoomSocket,
     acknowledge: ((result: RoomActionResult) => void) | undefined,
@@ -769,13 +822,335 @@ export class RealtimeServer {
     }
   }
 
-  private addPresence(
-    roomId: string,
+  private async handleChatJoin(
+    socket: RoomSocket,
+    payload: unknown,
+    acknowledge?: (result: RoomActionResult) => void,
+  ): Promise<void> {
+    if (!this.consumeRoomAction(socket, acknowledge)) {
+      return;
+    }
+
+    const result = await requireActiveRoomMembership(
+      socket.data.userId,
+      socket.data.roomId,
+    );
+
+    if (!(result instanceof AppError)) {
+      socket.data.roomId && socket.join(socket.data.roomId);
+    }
+
+    this.replySocket(socket, acknowledge, {
+      ok: true,
+    });
+  }
+
+  private async handleChatLeave(
+    socket: RoomSocket,
+    payload: unknown,
+    acknowledge?: (result: RoomActionResult) => void,
+  ): Promise<void> {
+    if (!this.consumeRoomAction(socket, acknowledge)) {
+      return;
+    }
+
+    socket.data.roomId && socket.leave(socket.data.roomId);
+
+    this.replySocket(socket, acknowledge, {
+      ok: true,
+    });
+  }
+
+  private async handleChatSendMessage(
+    socket: RoomSocket,
+    payload: unknown,
+    acknowledge?: (result: RoomActionResult) => void,
+  ): Promise<void> {
+    if (!this.consumeRoomAction(socket, acknowledge)) {
+      return;
+    }
+
+    const parsed = z
+      .object({
+        content: z.string().min(1).max(500),
+      })
+      .safeParse(payload);
+
+    if (!parsed.success) {
+      this.replySocket(socket, acknowledge, {
+        ok: false,
+        error: { code: 'INVALID_PAYLOAD', message: 'Invalid message content' },
+      });
+      return;
+    }
+
+    const { content } = parsed.data;
+
+    try {
+      await requireActiveRoomMembership(socket.data.userId, socket.data.roomId);
+    } catch (error: any) {
+      if (error instanceof AppError) {
+        this.replySocket(socket, acknowledge, {
+          ok: false,
+          error: { code: error.code, message: error.message },
+        });
+        return;
+      }
+      this.replySocket(socket, acknowledge, {
+        ok: false,
+        error: { code: 'INTERNAL_ERROR', message: 'Room membership check failed' },
+      });
+      return;
+    }
+
+    const session = await this.loadSessionForSocket(socket);
+
+    if (
+      !session?.userId ||
+      session.userId !== socket.data.userId ||
+      !socket.data.userId
+    ) {
+      this.documents.revokeSocket(socket, 'SESSION_ENDED');
+      this.replySocket(socket, acknowledge, {
+        ok: false,
+        error: { code: 'UNAUTHENTICATED', message: 'Authentication required' },
+      });
+      socket.disconnect(true);
+      return;
+    }
+
+    const now = new Date();
+
+    const messageDoc = new RoomMessage({
+      roomId: socket.data.roomId,
+      projectId: socket.data.projectId,
+      senderId: socket.data.userId,
+      content,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await messageDoc.save();
+
+    const message = {
+      id: messageDoc._id.toString(),
+      content,
+      senderId: socket.data.userId,
+      senderName: session.displayName ?? 'Unknown',
+      createdAt: now.toISOString(),
+      replyTo: payload.replyTo ?? null,
+    };
+
+    this.io.to(socket.data.roomId).emit(SERVER_EVENTS.messageReceived, message);
+
+    this.replySocket(socket, acknowledge, {
+      ok: true,
+      data: { messageId: message.id },
+    });
+  }
+
+  private async handleChatMessageEdit(
+    socket: RoomSocket,
+    payload: unknown,
+    acknowledge?: (result: RoomActionResult) => void,
+  ): Promise<void> {
+    if (!this.consumeRoomAction(socket, acknowledge)) {
+      return;
+    }
+
+    const parsed = z
+      .object({
+        messageId: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid message ID'),
+        content: z.string().min(1).max(500),
+      })
+      .safeParse(payload);
+
+    if (!parsed.success) {
+      this.replySocket(socket, acknowledge, {
+        ok: false,
+        error: { code: 'INVALID_PAYLOAD', message: 'Invalid edit payload' },
+      });
+      return;
+    }
+
+    const { messageId, content } = parsed.data;
+
+    try {
+      const message = await RoomMessage.findOneAndUpdate(
+        { _id: messageId, roomId: socket.data.roomId, senderId: socket.data.userId },
+        { content, editedAt: new Date() },
+        { new: true },
+      );
+
+      if (!message) {
+        this.replySocket(socket, acknowledge, {
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Message not found or not owned' },
+        });
+        return;
+      }
+
+      this.io.to(socket.data.roomId).emit(SERVER_EVENTS.messageEdited, {
+        messageId: message._id.toString(),
+        content: message.content,
+        editedAt: message.editedAt!.toISOString(),
+        senderId: message.senderId,
+      });
+
+      this.replySocket(socket, acknowledge, {
+        ok: true,
+        data: { messageId: message._id.toString() },
+      });
+    } catch (error: any) {
+      this.replySocket(socket, acknowledge, {
+        ok: false,
+        error: { code: 'INTERNAL_ERROR', message: error.message },
+      });
+    }
+  }
+
+  private async handleChatMessageDelete(
+    socket: RoomSocket,
+    payload: unknown,
+    acknowledge?: (result: RoomActionResult) => void,
+  ): Promise<void> {
+    if (!this.consumeRoomAction(socket, acknowledge)) {
+      return;
+    }
+
+    const parsed = z
+      .object({
+        messageId: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid message ID'),
+      })
+      .safeParse(payload);
+
+    if (!parsed.success) {
+      this.replySocket(socket, acknowledge, {
+        ok: false,
+        error: { code: 'INVALID_PAYLOAD', message: 'Invalid delete payload' },
+      });
+      return;
+    }
+
+    const { messageId } = parsed.data;
+
+    try {
+      const message = await RoomMessage.findOneAndUpdate(
+        {
+          _id: messageId,
+          roomId: socket.data.roomId,
+          $or: [
+            { senderId: socket.data.userId },
+            { role: 'owner' },
+          ],
+        },
+        { deletedAt: new Date() },
+        { new: true },
+      );
+
+      if (!message) {
+        this.replySocket(socket, acknowledge, {
+          ok: false,
+          error: { code: 'NOT_FOUND', message: 'Message not found or not owned' },
+        });
+        return;
+      }
+
+      this.io.to(socket.data.roomId).emit(SERVER_EVENTS.messageDeleted, {
+        messageId: message._id.toString(),
+        deleted: true,
+      });
+
+      this.replySocket(socket, acknowledge, {
+        ok: true,
+        data: { messageId: message._id.toString() },
+      });
+    } catch (error: any) {
+      this.replySocket(socket, acknowledge, {
+        ok: false,
+        error: { code: 'INTERNAL_ERROR', message: error.message },
+      });
+    }
+  }
+
+  private async handleTypingStart(
+    socket: RoomSocket,
+    payload: unknown,
+    acknowledge?: (result: RoomActionResult) => void,
+  ): Promise<void> {
+    if (!this.consumeRoomAction(socket, acknowledge)) {
+      return;
+    }
+
+    const session = await this.loadSessionForSocket(socket);
+
+    if (
+      !session?.userId ||
+      session.userId !== socket.data.userId ||
+      !socket.data.userId
+    ) {
+      this.replySocket(socket, acknowledge, {
+        ok: false,
+        error: { code: 'UNAUTHENTICATED', message: 'Authentication required' },
+      });
+      return;
+    }
+
+    this.io.to(socket.data.roomId).emit(SERVER_EVENTS.typingStart, {
+      userId: socket.data.userId,
+      displayName: session.displayName ?? 'Unknown',
+    });
+
+    this.replySocket(socket, acknowledge, {
+      ok: true,
+    });
+  }
+
+  private async handleTypingStop(
+    socket: RoomSocket,
+    payload: unknown,
+    acknowledge?: (result: RoomActionResult) => void,
+  ): Promise<void> {
+    if (!this.consumeRoomAction(socket, acknowledge)) {
+      return;
+    }
+
+    this.io.to(socket.data.roomId).emit(SERVER_EVENTS.typingStop, {
+      userId: socket.data.userId,
+    });
+
+    this.replySocket(socket, acknowledge, {
+      ok: true,
+    });
+  }
+
+  private replySocket(
+    socket: RoomSocket,
+    acknowledge?: (result: RoomActionResult) => void,
+    result: RoomActionResult,
+  ): void {
+    if (acknowledge) {
+      acknowledge(result);
+    } else {
+      socket.emit('result', result);
+    }
+  }
+
+  private async loadSessionForSocket(socket: RoomSocket): Promise<SessionData | null> {
+    try {
+      const session = await loadSession(socket.data.sessionId);
+      return session?.userId === socket.data.userId ? session : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private rejectDocumentTraffic(
     userId: string,
     displayName: string,
     socketId: string,
   ): boolean {
-    const roomPresence = this.presence.get(roomId) ?? new Map<string, PresenceUser>();
+    const roomPresence = this.presence.get(socket.data.roomId) ?? new Map<string, PresenceUser>();
 
     if (!this.presence.has(roomId)) {
       this.presence.set(roomId, roomPresence);

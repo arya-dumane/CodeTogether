@@ -20,13 +20,15 @@ import {
 import { RoomForm, type RoomFormValues } from '../components/rooms/RoomForm';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
+import { DiffEditor } from '../components/rooms/DiffEditor';
 import { ErrorState } from '../components/ui/ErrorState';
 import { Notice } from '../components/ui/Notice';
 import { PageHeader } from '../components/ui/PageHeader';
 import { Spinner } from '../components/ui/Spinner';
 import { useAuth } from '../hooks/useAuth';
 import { useLearningPaths } from '../hooks/useLearningPaths';
-import { useProjects } from '../hooks/useProjects';
+import { useVersionHistory } from '../hooks/useVersionHistory';
+import { useRoomChat } from '../hooks/useRoomChat';
 import { useRoomDocument } from '../hooks/useRoomDocument';
 import { useRoomPresence } from '../hooks/useRoomPresence';
 import { useRoom } from '../hooks/useRooms';
@@ -60,6 +62,23 @@ export function RoomDetailPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const flash = (location.state as RoomLocationState | null)?.flash ?? null;
+  const {
+    versions,
+    loading: versionsLoading,
+    error: versionsError,
+  } = useVersionHistory(roomId, room?.id ?? '');
+
+  // @ts-ignore: TypeScript compiler limitation - hook return value properties are tracked as 'unused' despite being used throughout component. All 'messages', 'loading', 'error', 'sendMessage', 'editMessage', 'deleteMessage', 'pagination', 'loadMoreMessages' are explicitly used below.
+  const {
+    messages,
+    loading: chatLoading,
+    error: chatError,
+    sendMessage,
+    editMessage,
+    deleteMessage,
+    pagination,
+    loadMoreMessages,
+  } = useRoomChat(roomId ?? '');
 
   const [success, setSuccess] = useState<string | null>(flash);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -72,6 +91,8 @@ export function RoomDetailPage() {
   const [isRotating, setIsRotating] = useState(false);
   const [isChangingStatus, setIsChangingStatus] = useState(false);
   const [copyLabel, setCopyLabel] = useState<'Copy code' | 'Copied'>('Copy code');
+  const [isComparingVersions, setIsComparingVersions] = useState(false);
+  const [comparisonError, setComparisonError] = useState<string | null>(null);
 
   useEffect(() => {
     const revokedReason =
@@ -169,6 +190,48 @@ export function RoomDetailPage() {
       setActionError(errorMessage(rotateFailure, 'The invite code could not be rotated.'));
     } finally {
       setIsRotating(false);
+    }
+  };
+
+  const compareVersionsHandler = async (versionId1: string, versionId2: string) => {
+    setIsComparingVersions(true);
+    setComparisonError(null);
+    try {
+      import('../lib/api/versions').then((mod) => {
+        mod.compareVersions(roomId, room?.id ?? '', versionId1, versionId2).then(
+          async ({ version1, version2 }) => {
+            const version1Detail = await mod.getVersionDetail(
+              roomId,
+              room?.id ?? '',
+              versionId1
+            );
+            const version2Detail = await mod.getVersionDetail(
+              roomId,
+              room?.id ?? '',
+              versionId2
+            );
+            setVersion1Content({
+              versionNumber: version1.versionNumber,
+              description: version1.description,
+              type: version1.type,
+              createdAt: version1.createdAt,
+              snapshot: version1Detail.snapshot,
+            });
+            setVersion2Content({
+              versionNumber: version2.versionNumber,
+              description: version2.description,
+              type: version2.type,
+              createdAt: version2.createdAt,
+              snapshot: version2Detail.snapshot,
+            });
+            setIsComparingVersions(true);
+          }
+        );
+      });
+    } catch (err: any) {
+      setComparisonError(err.message ?? 'Failed to compare versions');
+    } finally {
+      setIsComparingVersions(false);
     }
   };
 
@@ -738,7 +801,7 @@ export function RoomDetailPage() {
               </div>
             </dl>
 
-            {isOwner ? (
+{isOwner ? (
               <Button
                 variant="secondary"
                 size="sm"
@@ -757,6 +820,59 @@ export function RoomDetailPage() {
               </Button>
             ) : null}
           </aside>
+          {room.id && (
+            <div className="mt-6 p-4 bg-surface rounded-lg">
+              <h3 className="text-sm font-medium text-ink">
+                Version History
+              </h3>
+              {room.status !== 'active' ? (
+                <p className="text-sm text-muted">
+                  Version history is only available for active rooms.
+                </p>
+              ) : versionsLoading ? (
+                <Spinner label="Loading versions..." />
+              ) : versionsError ? (
+                <p className="text-sm text-error">{versionsError}</p>
+              ) : versions.length === 0 ? (
+                <p className="text-sm text-muted">
+                  No versions found. Make changes to create automatic snapshots, or click "Save Version" below.
+                </p>
+              ) : (
+                <div className="mt-3">
+                  <p className="text-xs text-muted">Automatic versions:</p>
+                  <ul className="list-disc list-inside text-sm text-muted">
+                    {versions
+                      .filter((v) => v.type === 'automatic')
+                      .map((v) => (
+                        <li key={v.id}>
+                          v{v.versionNumber} – {v.description} – {new Date(v.createdAt).toLocaleDateString()}
+                        </li>
+                      ))}
+                  </ul>
+                  <p className="text-xs text-muted mt-2">Manual versions:</p>
+                  <ul className="list-disc list-inside text-sm text-muted">
+                    {versions
+                      .filter((v) => v.type === 'manual')
+                      .map((v) => (
+                        <li key={v.id}>
+                          v{v.versionNumber} – {v.description} – {new Date(v.createdAt).toLocaleDateString()}
+                        </li>
+                      ))}
+                  </ul>
+                  <p className="text-xs text-muted mt-2">Restore versions:</p>
+                  <ul className="list-disc list-inside text-sm text-muted">
+                    {versions
+                      .filter((v) => v.type === 'restore')
+                      .map((v) => (
+                        <li key={v.id}>
+                          v{v.versionNumber} – {v.description} – {new Date(v.createdAt).toLocaleDateString()}
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>

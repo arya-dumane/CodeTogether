@@ -7,6 +7,13 @@ export const CLIENT_EVENTS = {
   documentSubscribe: 'document:subscribe',
   documentUnsubscribe: 'document:unsubscribe',
   documentMessage: 'document:message',
+  sendMessage: 'chat:sendMessage',
+  messageEdited: 'chat:messageEdited',
+  messageDeleted: 'chat:messageDeleted',
+  typingStart: 'chat:typingStart',
+  typingStop: 'chat:typingStop',
+  joinChat: 'chat:joinChat',
+  leaveChat: 'chat:leaveChat',
 } as const;
 
 export const SERVER_EVENTS = {
@@ -17,6 +24,11 @@ export const SERVER_EVENTS = {
   roomAccessRevoked: 'room:access_revoked',
   documentMessage: 'document:message',
   documentError: 'document:error',
+  messageReceived: 'chat:messageReceived',
+  messageEdited: 'chat:messageEdited',
+  messageDeleted: 'chat:messageDeleted',
+  typingStart: 'chat:typingStart',
+  typingStop: 'chat:typingStop',
 } as const;
 
 const roomId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid room ID');
@@ -98,6 +110,13 @@ export interface ClientToServerEvents {
     payload: unknown,
     acknowledge?: (result: RoomActionResult) => void,
   ) => void;
+  sendMessage: (payload: { content: string; replyTo?: string }) => void;
+  messageEdited: (payload: { messageId: string; content: string }) => void;
+  messageDeleted: (payload: { messageId: string }) => void;
+  typingStart: (payload: { userId: string; displayName: string }) => void;
+  typingStop: (payload: { userId: string }) => void;
+  joinChat: (payload: unknown, acknowledge?: (result: RoomActionResult) => void) => void;
+  leaveChat: (payload: unknown, acknowledge?: (result: RoomActionResult) => void) => void;
 }
 
 export interface ServerToClientEvents {
@@ -108,6 +127,11 @@ export interface ServerToClientEvents {
   'room:access_revoked': (payload: RoomAccessRevoked) => void;
   'document:message': (payload: DocumentMessage) => void;
   'document:error': (payload: RealtimeError) => void;
+  messageReceived: (payload: MessageReceived) => void;
+  messageEdited: (payload: MessageEdited) => void;
+  messageDeleted: (payload: MessageDeleted) => void;
+  typingStart: (payload: TypingStart) => void;
+  typingStop: (payload: TypingStop) => void;
 }
 
 export interface InterServerEvents {}
@@ -117,6 +141,39 @@ export interface SocketData {
   sessionId: string;
   rooms: Set<string>;
   documents: Set<string>;
+  roomId?: string;
+  projectId?: string;
+  displayName?: string;
+}
+
+export interface MessageReceived {
+  messageId: string;
+  content: string;
+  senderId: string;
+  senderName: string;
+  createdAt: string;
+  replyTo?: string | null;
+}
+
+export interface MessageEdited {
+  messageId: string;
+  content: string;
+  editedAt: string;
+  senderId: string;
+}
+
+export interface MessageDeleted {
+  messageId: string;
+  deleted: boolean;
+}
+
+export interface TypingStart {
+  userId: string;
+  displayName: string;
+}
+
+export interface TypingStop {
+  userId: string;
 }
 
 export type RoomSocket = Socket<

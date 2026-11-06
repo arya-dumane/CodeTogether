@@ -23,6 +23,11 @@ export type {
   LearningProgressDocument,
   LearningProgressShape,
 } from './LearningProgress.js';
+export { DocumentVersion } from './DocumentVersion.js';
+export type { DocumentVersionShape } from './DocumentVersion.js';
+export { CollaborativeDocument } from './CollaborativeDocument.js';
+export { RoomMessage } from './RoomMessage.js';
+export type { RoomMessageShape, RoomMessageDocument } from './RoomMessage.js';
 export {
   Room,
   generateInviteCode,
